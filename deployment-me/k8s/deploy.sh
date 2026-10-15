@@ -122,7 +122,6 @@ echo ""
 echo "UI Service (find your NodePort here):"
 kubectl -n $NAMESPACE get svc ui
 
-echo ""
 NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' 2>/dev/null || echo "<your-node-ip>")
 NODE_PORT=$(kubectl -n $NAMESPACE get svc ui -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "<nodePort>")
 

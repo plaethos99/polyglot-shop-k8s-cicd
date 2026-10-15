@@ -1,20 +1,25 @@
-﻿name: Build & Push Images to Docker Hub
+name: CI/CD Pipeline (Build, Push & Deploy to K8s)
 
 on:
   push:
     branches: [ main ]
     paths:
       - 'src/**'
+      - 'deployment-me/k8s/**'
+      - 'scripts/**'
       - '.github/workflows/ci-cd.yml'
-  workflow_dispatch:    # allow manual trigger from GitHub UI
+  workflow_dispatch:    # allow manual trigger from GitHub Actions UI
 
 jobs:
+  # ============================================================================
+  # JOB 1: Build Docker Images and Push to Docker Hub
+  # ============================================================================
   build-and-push:
-    name: "${{ matrix.service }}"
+    name: "Build & Push: ${{ matrix.service }}"
     runs-on: ubuntu-latest
 
     strategy:
-      fail-fast: false          # build all services even if one fails
+      fail-fast: false
       matrix:
         include:
           - service:    catalog
@@ -38,22 +43,18 @@ jobs:
             dockerfile: src/ui/Dockerfile
 
     steps:
-      # 1. Checkout
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Buildx (layer caching)
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 3. Login to Docker Hub
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 4. Build & Push
       - name: Build & Push -- ${{ matrix.service }}
         uses: docker/build-push-action@v5
         with:
@@ -65,3 +66,41 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to:   type=gha,mode=max,scope=${{ matrix.service }}
+
+  # ============================================================================
+  # JOB 2: Deploy to Kubernetes Cluster via SSH to AWS Master Node
+  # ============================================================================
+  deploy-to-k8s:
+    name: "Deploy to AWS Kubernetes Cluster"
+    needs: [build-and-push]
+    runs-on: ubuntu-latest
+    if: ${{ always() && needs.build-and-push.result == 'success' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to Master Node via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DOCKER_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+        with:
+          host: ${{ secrets.K8S_HOST || '13.49.245.123' }}
+          username: ${{ secrets.K8S_USER || 'ubuntu' }}
+          key: ${{ secrets.K8S_SSH_KEY }}
+          envs: DOCKER_USER
+          script: |
+            set -e
+            echo "==> Connected to AWS Master Node"
+            
+            # 1. Clone or update repository
+            if [ ! -d "polyglot-shop-k8s-cicd" ]; then
+              git clone https://github.com/plaethos99/polyglot-shop-k8s-cicd.git
+            fi
+            cd polyglot-shop-k8s-cicd
+            git fetch --all
+            git reset --hard origin/main
+            
+            # 2. Run the deployment script
+            chmod +x scripts/deploy-k8s.sh
+            ./scripts/deploy-k8s.sh "$DOCKER_USER"

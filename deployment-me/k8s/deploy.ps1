@@ -155,6 +155,7 @@ kubectl -n $NAMESPACE get svc ui
 # Grab NodePort automatically
 $nodePort = kubectl -n $NAMESPACE get svc ui -o jsonpath='{.spec.ports[0].nodePort}' 2>$null
 $nodeIP   = kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' 2>$null
+if (-not $nodeIP) { $nodeIP = "<your-node-ip>" }
 
 Write-Host ""
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Green
