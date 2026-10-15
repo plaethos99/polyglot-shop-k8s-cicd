@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# SCRIPT 1: Build Docker Images and Push to Docker Hub (Linux / macOS / Git Bash)
+# SCRIPT: build-and-push.sh (Linux / macOS / Git Bash)
+# Builds all 5 microservice Docker images locally and pushes them to Docker Hub
 # ==============================================================================
 set -euo pipefail
 
@@ -28,12 +29,15 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
+# Detect buildx support
+if ! docker buildx version >/dev/null 2>&1; then
+    echo "ℹ  Note: docker-buildx not detected. Using standard Docker builder."
+    export DOCKER_BUILDKIT=0
+fi
+
 # Ensure user is logged in
 echo "Checking Docker login..."
-if ! docker system info | grep -q "Username:"; then
-    echo "Please log in to Docker Hub:"
-    docker login
-fi
+docker login
 
 # List of 5 microservices and their folder paths
 SERVICES=("catalog" "orders" "cart" "checkout" "ui")
@@ -41,6 +45,15 @@ SERVICES=("catalog" "orders" "cart" "checkout" "ui")
 # Find repository root (where src/ is located)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Ensure checkout Dockerfile uses numeric 1000:1000 to prevent chown mapping errors
+CHECKOUT_DOCKERFILE="$REPO_ROOT/src/checkout/Dockerfile"
+if [ -f "$CHECKOUT_DOCKERFILE" ]; then
+    sed -i 's/COPY --chown=[^ ]* package/COPY package/g' "$CHECKOUT_DOCKERFILE" 2>/dev/null || true
+    sed -i 's/COPY --chown=[^ ]* \. \./COPY . ./g' "$CHECKOUT_DOCKERFILE" 2>/dev/null || true
+    sed -i 's/--chown=node:node/--chown=1000:1000/g' "$CHECKOUT_DOCKERFILE" 2>/dev/null || true
+    sed -i 's/--chown=appuser:appuser/--chown=1000:1000/g' "$CHECKOUT_DOCKERFILE" 2>/dev/null || true
+fi
 
 for SERVICE in "${SERVICES[@]}"; do
     IMAGE_NAME="${DOCKERHUB_USERNAME}/${SERVICE}:latest"

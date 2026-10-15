@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# SCRIPT 1: vm-build-and-push.sh
-# Run this on your NEW VM instance to build Docker images & push to Docker Hub
+# SCRIPT: vm-build-and-push.sh
+# Run this on your Linux VM to build all 5 microservices & push to Docker Hub
 # ==============================================================================
 set -euo pipefail
 
@@ -11,15 +11,15 @@ echo "║      🐳 VM DOCKER BUILD & PUSH TO DOCKER HUB                 ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 
-# 1. Check if Docker is installed, and offer to install if missing (for a fresh VM)
+# 1. Check if Docker is installed, and install if missing (with buildx)
 if ! command -v docker >/dev/null 2>&1; then
     echo "⚠️  Docker is not installed on this VM."
     read -rp "👉 Would you like to automatically install Docker now? (y/N): " INSTALL_DOCKER
     if [[ "$INSTALL_DOCKER" =~ ^[Yy]$ ]]; then
-        echo "⚙ Installing Docker..."
+        echo "⚙ Installing Docker and buildx..."
         if command -v apt-get >/dev/null 2>&1; then
             sudo apt-get update
-            sudo apt-get install -y docker.io
+            sudo apt-get install -y docker.io docker-buildx
             sudo systemctl enable --now docker
             sudo usermod -aG docker "$USER" || true
         elif command -v yum >/dev/null 2>&1; then
@@ -45,7 +45,13 @@ if ! docker info >/dev/null 2>&1; then
     fi
 fi
 
-# 2. Get Docker Hub Username
+# 2. Check if buildx component exists; if not, safely use legacy builder
+if ! docker buildx version >/dev/null 2>&1 && ! sudo docker buildx version >/dev/null 2>&1; then
+    echo "ℹ  Note: docker-buildx not detected. Using standard Docker builder."
+    export DOCKER_BUILDKIT=0
+fi
+
+# 3. Get Docker Hub Username
 DOCKERHUB_USERNAME="${1:-}"
 if [ -z "$DOCKERHUB_USERNAME" ]; then
     read -rp "👉 Enter your Docker Hub Username: " DOCKERHUB_USERNAME
@@ -56,12 +62,12 @@ if [ -z "$DOCKERHUB_USERNAME" ]; then
     exit 1
 fi
 
-# 3. Log in to Docker Hub
+# 4. Log in to Docker Hub
 echo ""
 echo "🔐 Checking Docker Hub login..."
 $DOCKER_CMD login
 
-# 4. Locate project root (src folder)
+# 5. Locate project root (src folder)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -71,7 +77,18 @@ if [ ! -d "$REPO_ROOT/src" ]; then
     exit 1
 fi
 
-# 5. Build and Push each of the 5 services
+# 6. Self-heal checkout Dockerfile chown if needed (ensures no uid/gid mapping failures)
+CHECKOUT_DOCKERFILE="$REPO_ROOT/src/checkout/Dockerfile"
+if [ -f "$CHECKOUT_DOCKERFILE" ]; then
+    # Ensure build stage uses plain COPY (no chown required for yarn build)
+    sed -i 's/COPY --chown=[^ ]* package/COPY package/g' "$CHECKOUT_DOCKERFILE" 2>/dev/null || true
+    sed -i 's/COPY --chown=[^ ]* \. \./COPY . ./g' "$CHECKOUT_DOCKERFILE" 2>/dev/null || true
+    # Ensure runtime stage uses numeric 1000:1000
+    sed -i 's/--chown=node:node/--chown=1000:1000/g' "$CHECKOUT_DOCKERFILE" 2>/dev/null || true
+    sed -i 's/--chown=appuser:appuser/--chown=1000:1000/g' "$CHECKOUT_DOCKERFILE" 2>/dev/null || true
+fi
+
+# 7. Build and Push each of the 5 services
 SERVICES=("catalog" "orders" "cart" "checkout" "ui")
 
 echo ""
@@ -91,7 +108,7 @@ for SERVICE in "${SERVICES[@]}"; do
     echo ""
     echo "⬆️  [2/2] Pushing to Docker Hub: $IMAGE_TAG"
     $DOCKER_CMD push "$IMAGE_TAG"
-    echo "✔ Done: $IMAGE_TAG"
+    echo "✔ Successfully pushed: $IMAGE_TAG"
     echo ""
 done
 
@@ -103,5 +120,6 @@ for SERVICE in "${SERVICES[@]}"; do
     echo "  ✔ ${DOCKERHUB_USERNAME}/${SERVICE}:latest"
 done
 echo ""
-echo "👉 NEXT STEP: Go to your AWS Master Node and run 'scripts/master-node-deploy.sh $DOCKERHUB_USERNAME'"
+echo "👉 NEXT STEP: Go to your AWS Master Node and run:"
+echo "   ./scripts/master-node-deploy.sh $DOCKERHUB_USERNAME"
 echo ""

@@ -1,11 +1,9 @@
 FROM node:20-alpine AS build
 WORKDIR /usr/src/app
-COPY --chown=node:node package*.json ./
-COPY --chown=node:node . .
+COPY package*.json ./
+COPY . .
 RUN yarn install --frozen-lockfile
 RUN yarn build
-USER node
-
 
 FROM public.ecr.aws/amazonlinux/amazonlinux:2023
 
@@ -34,7 +32,7 @@ RUN useradd \
 WORKDIR /app
 USER appuser
 
-COPY --chown=node:node --from=build /usr/src/app/node_modules ./node_modules
-COPY --chown=node:node --from=build /usr/src/app/dist ./dist
+COPY --chown=1000:1000 --from=build /usr/src/app/node_modules ./node_modules
+COPY --chown=1000:1000 --from=build /usr/src/app/dist ./dist
 
 ENTRYPOINT [ "node", "dist/main.js" ]
