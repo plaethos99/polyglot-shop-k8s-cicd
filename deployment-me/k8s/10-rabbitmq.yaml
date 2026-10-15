@@ -1,0 +1,87 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# RabbitMQ — message broker used by the orders service
+#
+# Why StatefulSet?  StatefulSets give each pod a stable identity and hostname
+# (rabbitmq-0) and persist data across restarts using a PersistentVolumeClaim.
+# Regular Deployments don't guarantee stable hostnames or ordered startup.
+#
+# StorageClass: local-path (provided by local-path-provisioner on kubeadm)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Headless Service — gives RabbitMQ a DNS name: rabbitmq.retail-store.svc.cluster.local
+# clusterIP: None means no load balancer, pods talk directly to rabbitmq-0
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: retail-store
+spec:
+  clusterIP: None
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    - name: management
+      port: 15672
+      targetPort: 15672
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+  namespace: retail-store
+spec:
+  serviceName: rabbitmq
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.12-management-alpine
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: management
+              containerPort: 15672
+          envFrom:
+            - secretRef:
+                name: rabbitmq-secret
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "ping"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "ping"]
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/rabbitmq
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path       # ← kubeadm local storage
+        resources:
+          requests:
+            storage: 1Gi

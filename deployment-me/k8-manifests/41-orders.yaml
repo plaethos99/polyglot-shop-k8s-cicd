@@ -35,7 +35,7 @@ spec:
           command: ["sh", "-c", "until nc -z rabbitmq 5672; do echo waiting for rabbitmq; sleep 3; done"]
       containers:
         - name: orders
-          image: 517178430929.dkr.ecr.eu-north-1.amazonaws.com/orders:latest
+          image: DOCKERHUB_USERNAME/orders:latest
           ports:
             - containerPort: 8080
           env:

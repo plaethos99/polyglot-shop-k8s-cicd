@@ -1,0 +1,67 @@
+﻿name: Build & Push Images to Docker Hub
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - '.github/workflows/ci-cd.yml'
+  workflow_dispatch:    # allow manual trigger from GitHub UI
+
+jobs:
+  build-and-push:
+    name: "${{ matrix.service }}"
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false          # build all services even if one fails
+      matrix:
+        include:
+          - service:    catalog
+            context:    src/catalog
+            dockerfile: src/catalog/Dockerfile
+
+          - service:    orders
+            context:    src/orders
+            dockerfile: src/orders/Dockerfile
+
+          - service:    cart
+            context:    src/cart
+            dockerfile: src/cart/Dockerfile
+
+          - service:    checkout
+            context:    src/checkout
+            dockerfile: src/checkout/Dockerfile
+
+          - service:    ui
+            context:    src/ui
+            dockerfile: src/ui/Dockerfile
+
+    steps:
+      # 1. Checkout
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Buildx (layer caching)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 3. Login to Docker Hub
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 4. Build & Push
+      - name: Build & Push -- ${{ matrix.service }}
+        uses: docker/build-push-action@v5
+        with:
+          context:    ${{ matrix.context }}
+          file:       ${{ matrix.dockerfile }}
+          push:       true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to:   type=gha,mode=max,scope=${{ matrix.service }}

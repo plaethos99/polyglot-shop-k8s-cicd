@@ -8,7 +8,9 @@ spec:
   ports:
     - port: 8080
       targetPort: 8080
-  type: LoadBalancer
+  type: NodePort
+  # NodePort so the UI is accessible on <master-IP>:<nodePort> on kubeadm
+  # The assigned NodePort will be shown by: kubectl -n retail-store get svc ui
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -25,7 +27,7 @@ spec:
     spec:
       containers:
         - name: ui
-          image: 517178430929.dkr.ecr.eu-north-1.amazonaws.com/ui:latest
+          image: DOCKERHUB_USERNAME/ui:latest
           ports: [ { containerPort: 8080 } ]
           env:
             - name: JAVA_OPTS

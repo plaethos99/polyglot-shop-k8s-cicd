@@ -39,7 +39,7 @@ spec:
                   key: MYSQL_PASSWORD
       containers:
         - name: catalog
-          image: 517178430929.dkr.ecr.eu-north-1.amazonaws.com/catalog:latest
+          image: DOCKERHUB_USERNAME/catalog:latest
           ports:
             - containerPort: 8080
           env:
@@ -66,5 +66,3 @@ spec:
               port: 8080
             initialDelaySeconds: 30
             periodSeconds: 20
-      imagePullSecrets:
-        - name: ecr-secret

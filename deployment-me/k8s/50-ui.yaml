@@ -1,0 +1,83 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# UI Service — Java Spring Boot frontend
+# Depends on: catalog, cart, checkout, orders (all must be running first)
+#
+# Service type: NodePort
+#   On kubeadm there is no cloud LoadBalancer.
+#   NodePort exposes the app on a port (30000-32767) on EVERY node.
+#   Access it at: http://<any-node-public-ip>:<nodePort>
+#
+#   Run this after deploy to find your NodePort:
+#   kubectl -n retail-store get svc ui
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: ui
+  namespace: retail-store
+spec:
+  type: NodePort
+  selector:
+    app: ui
+  ports:
+    - port: 8080
+      targetPort: 8080
+      # nodePort: 30080     ← uncomment to fix the port (must be 30000-32767)
+      #                       Leave commented to let Kubernetes assign one automatically
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ui
+  namespace: retail-store
+  labels:
+    app: ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ui
+  template:
+    metadata:
+      labels:
+        app: ui
+    spec:
+      containers:
+        - name: ui
+          image: YOUR_DOCKERHUB_USERNAME/ui:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: JAVA_OPTS
+              value: "-XX:MaxRAMPercentage=75.0 -Djava.security.egd=file:/dev/urandom"
+            - name: SERVER_TOMCAT_ACCESSLOG_ENABLED
+              value: "true"
+            # URLs of the backend services (UI calls these internally)
+            - name: ENDPOINTS_CATALOG
+              value: "http://catalog:8080"
+            - name: ENDPOINTS_CART
+              value: "http://cart:8080"
+            - name: ENDPOINTS_CHECKOUT
+              value: "http://checkout:8080"
+            - name: ENDPOINTS_ORDERS
+              value: "http://orders:8080"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "768Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 15
