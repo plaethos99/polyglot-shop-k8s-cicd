@@ -163,25 +163,30 @@ Once the pipeline completes:
 
 ## 🧹 6. Teardown / Cost Saving Cleanup
 
-When you are done testing, clean up resources to avoid AWS charges:
+When you are done testing, you can delete the cluster and all AWS resources directly from **GitHub Actions** with one click!
 
-### 1. Delete Application Resources
+### Method A: One-Click Teardown via GitHub Actions (Recommended)
+1. In your GitHub repository, click the **Actions** tab.
+2. In the left sidebar, select **Destroy EKS Cluster & Teardown Resources**.
+3. Click the **Run workflow** button on the right.
+4. In the inputs modal:
+   - **EKS Cluster Name:** `retail-store`
+   - **AWS Region:** `eu-north-1`
+   - **Delete ECR images:** Check if you want to purge ECR container images too.
+   - **Confirmation:** Type `destroy`
+5. Click **Run workflow**.
+
+> 🛡️ **What this does safely:**
+> - First deletes the Kubernetes LoadBalancer services so AWS ELBs are cleanly de-provisioned.
+> - Deletes the `retail-store` namespace.
+> - Invokes `eksctl delete cluster` to tear down the EC2 worker instances, VPC, subnets, and CloudFormation stacks.
+> - Stops all further AWS billing immediately.
+
+---
+
+### Method B: Manual CLI Teardown
+If you ever want to destroy it from a terminal instead:
 ```bash
-kubectl delete namespace retail-store
-```
-
-### 2. Delete EKS Cluster
-- **If created with `eksctl`**:
-  ```bash
-  eksctl delete cluster --name retail-store --region eu-north-1
-  ```
-- **If created with Terraform**:
-  ```bash
-  cd terraform/eks/minimal
-  terraform destroy -auto-approve
-  ```
-
-### 3. Clean up ECR Images
-```bash
-./scripts/aws-ecr-delete.sh --account 517178430929 --region eu-north-1 --all-images --force
+chmod +x scripts/destroy-eks.sh
+./scripts/destroy-eks.sh retail-store eu-north-1
 ```

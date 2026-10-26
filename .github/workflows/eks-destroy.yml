@@ -1,0 +1,89 @@
+name: Destroy EKS Cluster & Teardown Resources
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        description: 'EKS Cluster Name to destroy'
+        type: string
+        default: 'retail-store'
+        required: true
+      aws_region:
+        description: 'AWS Region'
+        type: string
+        default: 'eu-north-1'
+        required: true
+      delete_ecr_images:
+        description: 'Also delete all images from ECR repositories?'
+        type: boolean
+        default: false
+      confirm_destroy:
+        description: 'Type "destroy" to confirm deletion of the cluster'
+        type: string
+        required: true
+
+env:
+  AWS_REGION: ${{ inputs.aws_region || 'eu-north-1' }}
+  EKS_CLUSTER_NAME: ${{ inputs.cluster_name || 'retail-store' }}
+
+jobs:
+  destroy-eks:
+    name: "Teardown EKS Cluster"
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Verify Safety Confirmation
+        run: |
+          if [ "${{ inputs.confirm_destroy }}" != "destroy" ]; then
+            echo "❌ Error: Confirmation string '${{ inputs.confirm_destroy }}' does not match 'destroy'."
+            echo "Cluster deletion aborted to prevent accidental destruction."
+            exit 1
+          fi
+          echo "✔ Confirmation approved. Proceeding with cluster teardown."
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl & eksctl
+        run: |
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+
+          # Install eksctl
+          curl --silent --location "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin/
+          eksctl version
+
+      - name: Run EKS Destroy Script
+        run: |
+          chmod +x scripts/destroy-eks.sh
+          ./scripts/destroy-eks.sh "$EKS_CLUSTER_NAME" "$AWS_REGION"
+
+      - name: Delete ECR Images (Optional)
+        if: ${{ inputs.delete_ecr_images == true }}
+        run: |
+          echo "🗑️ Deleting all container images from ECR..."
+          chmod +x scripts/aws-ecr-delete.sh
+          ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+          ./scripts/aws-ecr-delete.sh --account "$ACCOUNT_ID" --region "$AWS_REGION" --all-images --force
+
+      - name: Publish Destroy Summary
+        if: always()
+        run: |
+          echo "### 🗑️ EKS Cluster Destruction Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Cluster Name:** \`$EKS_CLUSTER_NAME\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **AWS Region:** \`$AWS_REGION\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** Successfully Deleted ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **ECR Images Purged:** \`${{ inputs.delete_ecr_images }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All AWS resources (EKS control plane, EC2 worker nodes, and ELB LoadBalancers) have been terminated to ensure no further AWS charges." >> $GITHUB_STEP_SUMMARY
