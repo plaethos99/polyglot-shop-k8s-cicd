@@ -61,9 +61,25 @@ echo ""
 echo "── Step 1/6: Updating kubeconfig for EKS cluster '$EKS_CLUSTER_NAME'..."
 aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
 
-echo "Verifying cluster access..."
+echo "Verifying cluster access & worker nodes..."
+NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
+if [ "$NODE_COUNT" -eq 0 ]; then
+    echo "⚠️ Waiting up to 3 minutes for worker nodes to join the cluster..."
+    for i in {1..18}; do
+        sleep 10
+        NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
+        if [ "$NODE_COUNT" -gt 0 ]; then
+            break
+        fi
+    done
+fi
+
 kubectl get nodes -o wide
-echo "✔ Successfully connected to EKS cluster."
+if [ "$NODE_COUNT" -eq 0 ]; then
+    echo "❌ ERROR: Cluster has 0 worker nodes! Pods cannot schedule without worker nodes."
+    exit 1
+fi
+echo "✔ Successfully connected to EKS cluster with $NODE_COUNT worker node(s)."
 
 # Locate manifests directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -80,16 +96,10 @@ fi
 
 # 4. StorageClass Setup
 echo ""
-echo "── Step 2/6: Checking StorageClass for database PVCs..."
-if ! kubectl get storageclass >/dev/null 2>&1 || [ "$(kubectl get storageclass --no-headers 2>/dev/null | wc -l)" -eq 0 ]; then
-    echo "   ⚙ No StorageClass found. Installing rancher local-path provisioner as fallback..."
-    kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.26/deploy/local-path-storage.yaml
-    kubectl patch storageclass local-path -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
-    echo "   ✔ StorageClass 'local-path' installed."
-else
-    echo "   ✔ StorageClass already available:"
-    kubectl get storageclass
-fi
+echo "── Step 2/6: Ensuring StorageClass (local-path) is installed for database PVCs..."
+kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.26/deploy/local-path-storage.yaml
+kubectl patch storageclass local-path -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' 2>/dev/null || true
+kubectl get storageclass
 
 # 5. Namespace and ECR Pull Secret
 echo ""
@@ -145,9 +155,9 @@ apply_eks_manifest "${MANIFEST_DIR}/42-cart.yaml" "cart"
 apply_eks_manifest "${MANIFEST_DIR}/43-checkout.yaml" "checkout"
 apply_eks_manifest "${MANIFEST_DIR}/50-ui.yaml" "ui"
 
-# Expose UI service via LoadBalancer on EKS
-echo "   Configuring UI service as LoadBalancer on EKS..."
-kubectl -n "$NAMESPACE" patch svc ui -p '{"spec": {"type": "LoadBalancer"}}' 2>/dev/null || true
+# Expose UI service via LoadBalancer on EKS (listening on both port 80 and 8080)
+echo "   Configuring UI service as LoadBalancer on EKS (ports 80 and 8080)..."
+kubectl -n "$NAMESPACE" patch svc ui -p '{"spec": {"type": "LoadBalancer", "ports": [{"name": "http", "port": 80, "targetPort": 8080}, {"name": "http-alt", "port": 8080, "targetPort": 8080}]}}' 2>/dev/null || true
 
 # 8. Check Rollout & LoadBalancer URL
 echo ""

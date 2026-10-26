@@ -171,6 +171,25 @@ jobs:
             echo "✔ EKS Cluster successfully created by GitHub Actions!"
           fi
 
+          # Ensure the cluster has worker nodegroups attached
+          echo "🔍 Checking for active nodegroups on cluster '$EKS_CLUSTER_NAME'..."
+          NODEGROUPS=$(aws eks list-nodegroups --cluster-name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" --query "nodegroups" --output text 2>/dev/null || true)
+          if [ -z "$NODEGROUPS" ] || [ "$NODEGROUPS" = "None" ]; then
+            echo "⚠️ Cluster exists but has NO worker nodegroups! Creating managed nodegroup 'standard-workers' (2x t3.large)..."
+            eksctl create nodegroup \
+              --cluster "$EKS_CLUSTER_NAME" \
+              --region "$AWS_REGION" \
+              --name "standard-workers" \
+              --node-type "t3.large" \
+              --nodes 2 \
+              --nodes-min 1 \
+              --nodes-max 3 \
+              --managed
+            echo "✔ Nodegroup 'standard-workers' created!"
+          else
+            echo "✔ Active nodegroups found: $NODEGROUPS"
+          fi
+
   # ============================================================================
   # JOB 3: Deploy Polyglot Shop to AWS EKS
   # ============================================================================
