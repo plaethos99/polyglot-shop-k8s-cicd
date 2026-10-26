@@ -61,6 +61,7 @@ flowchart LR
   ```
 
 ### 2. On the Kubeadm Master Node
+- **Kubernetes Cluster**: Running a 2-node Kubeadm cluster. *(If not installed yet, follow the step-by-step setup in [KUBEADM_CLUSTER_INSTALLATION.md](KUBEADM_CLUSTER_INSTALLATION.md))*.
 - **kubectl** installed and cluster healthy:
   ```bash
   kubectl get nodes -o wide
