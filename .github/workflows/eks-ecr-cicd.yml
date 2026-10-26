@@ -1,4 +1,4 @@
-name: EKS CI/CD Pipeline (Build, Push to ECR & Deploy to EKS)
+name: EKS CI/CD Pipeline (Build, Push to ECR, Create EKS & Deploy)
 
 on:
   push:
@@ -12,10 +12,6 @@ on:
       - '.github/workflows/eks-ecr-cicd.yml'
   workflow_dispatch:
     inputs:
-      create_eks_cluster:
-        description: 'Auto-create EKS cluster using eksctl if not found?'
-        type: boolean
-        default: false
       cluster_name:
         description: 'EKS Cluster Name'
         type: string
@@ -35,7 +31,7 @@ env:
 
 jobs:
   # ============================================================================
-  # JOB 1: Build Docker Images & Push to AWS ECR
+  # JOB 1: Build Docker Images & Push to AWS ECR (Runs in parallel with Job 2)
   # ============================================================================
   build-and-push-ecr:
     name: "Build & Push ECR: ${{ matrix.service }}"
@@ -109,8 +105,6 @@ jobs:
 
       - name: Build & Push to AWS ECR
         uses: docker/build-push-action@v5
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -122,12 +116,12 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
   # ============================================================================
-  # JOB 2: (Optional) Create EKS Cluster via eksctl if requested
+  # JOB 2: Ensure or Automatically Create EKS Cluster via eksctl
   # ============================================================================
-  create-eks-cluster:
-    name: "Ensure EKS Cluster Exists"
+  create-or-verify-eks-cluster:
+    name: "Ensure / Create EKS Cluster"
     runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.create_eks_cluster == 'true' }}
+    timeout-minutes: 35
 
     steps:
       - name: Checkout code
@@ -146,13 +140,26 @@ jobs:
           sudo mv /tmp/eksctl /usr/local/bin
           eksctl version
 
-      - name: Create EKS Cluster if not present
+      - name: Check if EKS Cluster exists or Create it
         run: |
+          echo "🔍 Checking if EKS cluster '$EKS_CLUSTER_NAME' exists in region $AWS_REGION..."
           if aws eks describe-cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
-            echo "✔ EKS cluster '$EKS_CLUSTER_NAME' already exists."
+            CLUSTER_STATUS=$(aws eks describe-cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" --query "cluster.status" --output text)
+            echo "✔ EKS cluster '$EKS_CLUSTER_NAME' already exists! Current status: $CLUSTER_STATUS"
+            if [ "$CLUSTER_STATUS" != "ACTIVE" ]; then
+              echo "⏳ Waiting for cluster to transition to ACTIVE state..."
+              aws eks wait cluster-active --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+            fi
           else
-            echo "⚙ Creating EKS cluster '$EKS_CLUSTER_NAME' using eksctl-cluster.yaml..."
+            echo "⚙ EKS cluster '$EKS_CLUSTER_NAME' does not exist."
+            echo "🚀 Launching new EKS cluster with 2 worker nodes (t3.large) via eksctl..."
+            
+            # Update region and cluster name in eksctl config dynamically
+            sed -i "s|name: .*|name: $EKS_CLUSTER_NAME|g" deployment-me/eks/eksctl-cluster.yaml
+            sed -i "s|region: .*|region: $AWS_REGION|g" deployment-me/eks/eksctl-cluster.yaml
+            
             eksctl create cluster -f deployment-me/eks/eksctl-cluster.yaml
+            echo "✔ EKS Cluster successfully created by GitHub Actions!"
           fi
 
   # ============================================================================
@@ -160,8 +167,7 @@ jobs:
   # ============================================================================
   deploy-to-eks:
     name: "Deploy to AWS EKS Cluster"
-    needs: [build-and-push-ecr]
-    if: ${{ always() && needs.build-and-push-ecr.result == 'success' }}
+    needs: [build-and-push-ecr, create-or-verify-eks-cluster]
     runs-on: ubuntu-latest
 
     steps:

@@ -74,57 +74,19 @@ Your AWS IAM user or role needs permissions for:
 
 ---
 
-## ☸️ 2. Creating the EKS Cluster
+## ☸️ 2. Cluster Creation (100% Automated by GitHub Actions)
 
-You have 3 simple ways to create the EKS cluster:
+**You do NOT need to install eksctl or create the cluster locally from your laptop.**
 
-### Method A: Using `eksctl` (Fastest & Recommended)
-Run from your terminal (or CloudShell):
+GitHub Actions handles the entire lifecycle automatically:
+1. When the pipeline runs, **Job 2 (`create-or-verify-eks-cluster`)** checks if an EKS cluster named `retail-store` exists in your AWS region.
+2. **If it doesn't exist**: GitHub Actions automatically launches `eksctl` and provisions the complete 2-node cluster (`t3.large`, gp3 storage, VPC, OIDC, managed node groups).
+3. **If it already exists**: GitHub Actions simply confirms it is `ACTIVE` and immediately proceeds to deploy your application.
+
+*(Optional)*: If you ever want to create or manage the cluster manually from your terminal, you can still use:
 ```bash
-# Using the pre-configured eksctl cluster template:
 eksctl create cluster -f deployment-me/eks/eksctl-cluster.yaml
 ```
-*Or single command:*
-```bash
-eksctl create cluster \
-  --name retail-store \
-  --region eu-north-1 \
-  --nodegroup-name standard-workers \
-  --node-type t3.large \
-  --nodes 2 \
-  --nodes-min 1 \
-  --nodes-max 3 \
-  --managed
-```
-⏱️ *Creation typically takes 10–12 minutes.*
-
----
-
-### Method B: Using Terraform
-Navigate to the repository's Terraform module:
-```bash
-cd terraform/eks/minimal
-
-terraform init
-terraform plan
-terraform apply -auto-approve
-```
-After completion, update your local `kubectl`:
-```bash
-aws eks update-kubeconfig --name retail-store --region eu-north-1
-```
-
----
-
-### Method C: Automatically via GitHub Actions
-When you trigger the workflow manually from the GitHub UI:
-1. Go to the **Actions** tab in GitHub.
-2. Select **EKS CI/CD Pipeline**.
-3. Click **Run workflow**.
-4. Check **"Auto-create EKS cluster using eksctl if not found?"**.
-5. Click **Run workflow**.
-
----
 
 ## 🚢 3. How the CI/CD Pipeline Operates
 
