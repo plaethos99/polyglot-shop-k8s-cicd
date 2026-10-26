@@ -120,6 +120,7 @@ jobs:
   # ============================================================================
   create-or-verify-eks-cluster:
     name: "Ensure / Create EKS Cluster"
+    needs: [build-and-push-ecr]
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
@@ -154,11 +155,19 @@ jobs:
             echo "⚙ EKS cluster '$EKS_CLUSTER_NAME' does not exist."
             echo "🚀 Launching new EKS cluster with 2 worker nodes (t3.large) via eksctl..."
             
-            # Update region and cluster name in eksctl config dynamically
-            sed -i "s|name: .*|name: $EKS_CLUSTER_NAME|g" deployment-me/eks/eksctl-cluster.yaml
-            sed -i "s|region: .*|region: $AWS_REGION|g" deployment-me/eks/eksctl-cluster.yaml
-            
-            eksctl create cluster -f deployment-me/eks/eksctl-cluster.yaml
+            eksctl create cluster \
+              --name "$EKS_CLUSTER_NAME" \
+              --region "$AWS_REGION" \
+              --version "1.31" \
+              --nodegroup-name "standard-workers" \
+              --node-type "t3.large" \
+              --nodes 2 \
+              --nodes-min 1 \
+              --nodes-max 3 \
+              --node-volume-size 30 \
+              --managed \
+              --with-oidc
+              
             echo "✔ EKS Cluster successfully created by GitHub Actions!"
           fi
 
@@ -167,7 +176,7 @@ jobs:
   # ============================================================================
   deploy-to-eks:
     name: "Deploy to AWS EKS Cluster"
-    needs: [build-and-push-ecr, create-or-verify-eks-cluster]
+    needs: [create-or-verify-eks-cluster]
     runs-on: ubuntu-latest
 
     steps:
