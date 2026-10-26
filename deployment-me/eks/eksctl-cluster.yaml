@@ -3,7 +3,7 @@ kind: ClusterConfig
 
 metadata:
   name: my-cluster
-  region: ap-south-1
+  region: eu-north-1
   version: "1.31"
 
 iam:

@@ -11,7 +11,7 @@ on:
       aws_region:
         description: 'AWS Region'
         type: string
-        default: 'ap-south-1'
+        default: 'eu-north-1'
         required: true
       delete_ecr_images:
         description: 'Also delete all images from ECR repositories?'
@@ -23,7 +23,7 @@ on:
         required: true
 
 env:
-  AWS_REGION: ${{ inputs.aws_region || 'ap-south-1' }}
+  AWS_REGION: ${{ inputs.aws_region || 'eu-north-1' }}
   EKS_CLUSTER_NAME: ${{ inputs.cluster_name || 'my-cluster' }}
 
 jobs:
