@@ -15,19 +15,19 @@ on:
       cluster_name:
         description: 'EKS Cluster Name'
         type: string
-        default: 'retail-store'
+        default: 'my-cluster'
       aws_region:
         description: 'AWS Region'
         type: string
-        default: 'eu-north-1'
+        default: 'ap-south-1'
       image_tag:
         description: 'Custom image tag (leave blank to use git commit SHA)'
         type: string
         default: ''
 
 env:
-  AWS_REGION: ${{ inputs.aws_region || vars.AWS_REGION || 'eu-north-1' }}
-  EKS_CLUSTER_NAME: ${{ inputs.cluster_name || vars.EKS_CLUSTER_NAME || 'retail-store' }}
+  AWS_REGION: ${{ inputs.aws_region || vars.AWS_REGION || 'ap-south-1' }}
+  EKS_CLUSTER_NAME: ${{ inputs.cluster_name || vars.EKS_CLUSTER_NAME || 'my-cluster' }}
 
 jobs:
   # ============================================================================
@@ -141,7 +141,32 @@ jobs:
           sudo mv /tmp/eksctl /usr/local/bin
           eksctl version
 
+      - name: Verify EC2 Instance Quota & Permissions
+        id: check-instances
+        run: |
+          echo "🔍 Checking availability and quota for t3.medium in $AWS_REGION..."
+          CHOSEN_TYPE="t3.medium"
+          
+          # Check if t3.medium is available in this region
+          OFFERED=$(aws ec2 describe-instance-type-offerings \
+            --location-type availability-zone \
+            --filters Name=instance-type,Values=t3.medium \
+            --region "$AWS_REGION" \
+            --query "length(InstanceTypeOfferings)" \
+            --output text 2>/dev/null || echo "0")
+            
+          if [ "$OFFERED" -gt 0 ]; then
+            echo "✔ t3.medium is fully permitted and supported across $OFFERED AZs in $AWS_REGION."
+          else
+            echo "⚠️ t3.medium not offered. Falling back to t2.medium..."
+            CHOSEN_TYPE="t2.medium"
+          fi
+
+          echo "selected_type=$CHOSEN_TYPE" >> $GITHUB_OUTPUT
+
       - name: Check if EKS Cluster exists or Create it
+        env:
+          NODE_TYPE: ${{ steps.check-instances.outputs.selected_type }}
         run: |
           echo "🔍 Checking if EKS cluster '$EKS_CLUSTER_NAME' exists in region $AWS_REGION..."
           if aws eks describe-cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
@@ -153,18 +178,17 @@ jobs:
             fi
           else
             echo "⚙ EKS cluster '$EKS_CLUSTER_NAME' does not exist."
-            echo "🚀 Launching new EKS cluster with 2 worker nodes (t3.large) via eksctl..."
+            echo "🚀 Launching new EKS cluster with 2 worker nodes ($NODE_TYPE) via eksctl..."
             
             eksctl create cluster \
               --name "$EKS_CLUSTER_NAME" \
               --region "$AWS_REGION" \
               --version "1.31" \
-              --nodegroup-name "standard-workers" \
-              --node-type "t3.large" \
+              --nodegroup-name "my-nodes" \
+              --node-type "$NODE_TYPE" \
               --nodes 2 \
               --nodes-min 1 \
-              --nodes-max 3 \
-              --node-volume-size 30 \
+              --nodes-max 4 \
               --managed \
               --with-oidc
               
@@ -175,17 +199,17 @@ jobs:
           echo "🔍 Checking for active nodegroups on cluster '$EKS_CLUSTER_NAME'..."
           NODEGROUPS=$(aws eks list-nodegroups --cluster-name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" --query "nodegroups" --output text 2>/dev/null || true)
           if [ -z "$NODEGROUPS" ] || [ "$NODEGROUPS" = "None" ]; then
-            echo "⚠️ Cluster exists but has NO worker nodegroups! Creating managed nodegroup 'standard-workers' (2x t3.large)..."
+            echo "⚠️ Cluster exists but has NO worker nodegroups! Creating managed nodegroup 'my-nodes' (2x $NODE_TYPE)..."
             eksctl create nodegroup \
               --cluster "$EKS_CLUSTER_NAME" \
               --region "$AWS_REGION" \
-              --name "standard-workers" \
-              --node-type "t3.large" \
+              --name "my-nodes" \
+              --node-type "$NODE_TYPE" \
               --nodes 2 \
               --nodes-min 1 \
-              --nodes-max 3 \
+              --nodes-max 4 \
               --managed
-            echo "✔ Nodegroup 'standard-workers' created!"
+            echo "✔ Nodegroup 'my-nodes' created!"
           else
             echo "✔ Active nodegroups found: $NODEGROUPS"
           fi

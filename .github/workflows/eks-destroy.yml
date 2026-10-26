@@ -6,12 +6,12 @@ on:
       cluster_name:
         description: 'EKS Cluster Name to destroy'
         type: string
-        default: 'retail-store'
+        default: 'my-cluster'
         required: true
       aws_region:
         description: 'AWS Region'
         type: string
-        default: 'eu-north-1'
+        default: 'ap-south-1'
         required: true
       delete_ecr_images:
         description: 'Also delete all images from ECR repositories?'
@@ -23,8 +23,8 @@ on:
         required: true
 
 env:
-  AWS_REGION: ${{ inputs.aws_region || 'eu-north-1' }}
-  EKS_CLUSTER_NAME: ${{ inputs.cluster_name || 'retail-store' }}
+  AWS_REGION: ${{ inputs.aws_region || 'ap-south-1' }}
+  EKS_CLUSTER_NAME: ${{ inputs.cluster_name || 'my-cluster' }}
 
 jobs:
   destroy-eks:
