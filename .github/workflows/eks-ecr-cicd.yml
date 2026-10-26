@@ -1,0 +1,208 @@
+name: EKS CI/CD Pipeline (Build, Push to ECR & Deploy to EKS)
+
+on:
+  push:
+    branches:
+      - main
+      - feat/eks-ecr-cicd
+    paths:
+      - 'src/**'
+      - 'deployment-me/k8s/**'
+      - 'scripts/**'
+      - '.github/workflows/eks-ecr-cicd.yml'
+  workflow_dispatch:
+    inputs:
+      create_eks_cluster:
+        description: 'Auto-create EKS cluster using eksctl if not found?'
+        type: boolean
+        default: false
+      cluster_name:
+        description: 'EKS Cluster Name'
+        type: string
+        default: 'retail-store'
+      aws_region:
+        description: 'AWS Region'
+        type: string
+        default: 'eu-north-1'
+      image_tag:
+        description: 'Custom image tag (leave blank to use git commit SHA)'
+        type: string
+        default: ''
+
+env:
+  AWS_REGION: ${{ inputs.aws_region || vars.AWS_REGION || 'eu-north-1' }}
+  EKS_CLUSTER_NAME: ${{ inputs.cluster_name || vars.EKS_CLUSTER_NAME || 'retail-store' }}
+
+jobs:
+  # ============================================================================
+  # JOB 1: Build Docker Images & Push to AWS ECR
+  # ============================================================================
+  build-and-push-ecr:
+    name: "Build & Push ECR: ${{ matrix.service }}"
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service:    catalog
+            context:    src/catalog
+            dockerfile: src/catalog/Dockerfile
+
+          - service:    orders
+            context:    src/orders
+            dockerfile: src/orders/Dockerfile
+
+          - service:    cart
+            context:    src/cart
+            dockerfile: src/cart/Dockerfile
+
+          - service:    checkout
+            context:    src/checkout
+            dockerfile: src/checkout/Dockerfile
+
+          - service:    ui
+            context:    src/ui
+            dockerfile: src/ui/Dockerfile
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Ensure ECR Repository Exists
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          if ! aws ecr describe-repositories --repository-names "$SERVICE" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "Creating ECR repository: $SERVICE"
+            aws ecr create-repository \
+              --repository-name "$SERVICE" \
+              --region "$AWS_REGION" \
+              --image-scanning-configuration scanOnPush=true \
+              --encryption-configuration encryptionType=AES256
+          else
+            echo "ECR repository '$SERVICE' already exists."
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Fix checkout permissions if needed
+      - name: Patch checkout Dockerfile chown if service is checkout
+        if: matrix.service == 'checkout'
+        run: |
+          sed -i 's/COPY --chown=[^ ]* package/COPY package/g' src/checkout/Dockerfile 2>/dev/null || true
+          sed -i 's/COPY --chown=[^ ]* \. \./COPY . ./g' src/checkout/Dockerfile 2>/dev/null || true
+          sed -i 's/--chown=node:node/--chown=1000:1000/g' src/checkout/Dockerfile 2>/dev/null || true
+          sed -i 's/--chown=appuser:appuser/--chown=1000:1000/g' src/checkout/Dockerfile 2>/dev/null || true
+
+      - name: Build & Push to AWS ECR
+        uses: docker/build-push-action@v5
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ matrix.service }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ matrix.service }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  # ============================================================================
+  # JOB 2: (Optional) Create EKS Cluster via eksctl if requested
+  # ============================================================================
+  create-eks-cluster:
+    name: "Ensure EKS Cluster Exists"
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.create_eks_cluster == 'true' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install eksctl
+        run: |
+          curl --silent --location "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+          eksctl version
+
+      - name: Create EKS Cluster if not present
+        run: |
+          if aws eks describe-cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "✔ EKS cluster '$EKS_CLUSTER_NAME' already exists."
+          else
+            echo "⚙ Creating EKS cluster '$EKS_CLUSTER_NAME' using eksctl-cluster.yaml..."
+            eksctl create cluster -f deployment-me/eks/eksctl-cluster.yaml
+          fi
+
+  # ============================================================================
+  # JOB 3: Deploy Polyglot Shop to AWS EKS
+  # ============================================================================
+  deploy-to-eks:
+    name: "Deploy to AWS EKS Cluster"
+    needs: [build-and-push-ecr]
+    if: ${{ always() && needs.build-and-push-ecr.result == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Run EKS Deployment Script
+        env:
+          INPUT_TAG: ${{ inputs.image_tag }}
+        run: |
+          TARGET_TAG="${INPUT_TAG:-${{ github.sha }}}"
+          ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+          
+          chmod +x scripts/deploy-eks.sh
+          ./scripts/deploy-eks.sh "$EKS_CLUSTER_NAME" "$AWS_REGION" "$ACCOUNT_ID" "$TARGET_TAG"
+
+      - name: Publish Deployment Summary
+        if: always()
+        run: |
+          NAMESPACE="retail-store"
+          LB_HOSTNAME=$(kubectl -n "$NAMESPACE" get svc ui -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Pending")
+          
+          echo "### 🚀 EKS Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Cluster:** \`$EKS_CLUSTER_NAME\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Region:** \`$AWS_REGION\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit SHA:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **UI Service Endpoint:** [http://$LB_HOSTNAME:8080](http://$LB_HOSTNAME:8080)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Pods Status:" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          kubectl -n "$NAMESPACE" get pods -o wide >> $GITHUB_STEP_SUMMARY 2>&1 || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
