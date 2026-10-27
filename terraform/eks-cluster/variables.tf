@@ -25,7 +25,7 @@ variable "nodegroup_name" {
 variable "node_type" {
   description = "EC2 Instance type for worker nodes"
   type        = string
-  default     = "t3.medium"
+  default     = "m7i.large"
 }
 
 variable "desired_nodes" {
@@ -37,11 +37,17 @@ variable "desired_nodes" {
 variable "min_nodes" {
   description = "Minimum number of worker nodes"
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "max_nodes" {
   description = "Maximum number of worker nodes"
   type        = number
-  default     = 4
+  default     = 2
+}
+
+variable "disk_size" {
+  description = "Disk size in GiB for worker nodes"
+  type        = number
+  default     = 30
 }

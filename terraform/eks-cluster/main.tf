@@ -53,15 +53,19 @@ module "vpc" {
 }
 
 # ------------------------------------------------------------------------------
-# 2. Amazon EKS Cluster & Managed Node Group (my-nodes with t3.medium)
+# 2. Amazon EKS Cluster & Managed Node Group (my-nodes with m7i.large)
 # ------------------------------------------------------------------------------
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "~> 19.21"
+  version = "~> 20.31"
 
   cluster_name                   = var.cluster_name
   cluster_version                = var.cluster_version
-  cluster_endpoint_public_access = true
+  cluster_endpoint_public_access  = true
+  cluster_endpoint_private_access = true
+
+  # Grants cluster-admin permissions to the IAM identity running Terraform via EKS Access Entries
+  enable_cluster_creator_admin_permissions = true
 
   vpc_id                   = module.vpc.vpc_id
   subnet_ids               = module.vpc.private_subnets
@@ -79,6 +83,11 @@ module "eks" {
     }
   }
 
+  eks_managed_node_group_defaults = {
+    ami_type       = "AL2023_x86_64_STANDARD"
+    instance_types = [var.node_type]
+  }
+
   eks_managed_node_groups = {
     my-nodes = {
       name           = var.nodegroup_name
@@ -89,7 +98,19 @@ module "eks" {
       max_size     = var.max_nodes
       desired_size = var.desired_nodes
 
-      disk_size = 30
+      block_device_mappings = {
+        xvda = {
+          device_name = "/dev/xvda"
+          ebs = {
+            volume_size           = var.disk_size
+            volume_type           = "gp3"
+            iops                  = 3000
+            throughput            = 125
+            encrypted             = true
+            delete_on_termination = true
+          }
+        }
+      }
 
       labels = {
         role = "worker"
@@ -107,3 +128,4 @@ module "eks" {
     Terraform   = "true"
   }
 }
+
