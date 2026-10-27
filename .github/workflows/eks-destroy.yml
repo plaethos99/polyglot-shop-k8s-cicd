@@ -64,10 +64,21 @@ jobs:
           sudo mv /tmp/eksctl /usr/local/bin/
           eksctl version
 
-      - name: Run EKS Destroy Script
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Run EKS Destroy (LoadBalancer Release & Terraform Teardown)
         run: |
           chmod +x scripts/destroy-eks.sh
-          ./scripts/destroy-eks.sh "$EKS_CLUSTER_NAME" "$AWS_REGION"
+          ./scripts/destroy-eks.sh "$EKS_CLUSTER_NAME" "$AWS_REGION" || true
+
+          cd terraform/eks-cluster
+          terraform init || true
+          terraform destroy -auto-approve \
+            -var="cluster_name=$EKS_CLUSTER_NAME" \
+            -var="aws_region=$AWS_REGION" || true
 
       - name: Delete ECR Images (Optional)
         if: ${{ inputs.delete_ecr_images == true }}

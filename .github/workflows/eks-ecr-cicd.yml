@@ -116,10 +116,10 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
   # ============================================================================
-  # JOB 2: Ensure or Automatically Create EKS Cluster via eksctl
+  # JOB 2: Provision EKS Cluster & Managed Worker Nodes via Terraform
   # ============================================================================
-  create-or-verify-eks-cluster:
-    name: "Ensure / Create EKS Cluster"
+  provision-eks-terraform:
+    name: "Provision EKS Cluster (Terraform)"
     needs: [build-and-push-ecr]
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -135,147 +135,43 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Install eksctl
-        run: |
-          curl --silent --location "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
-          sudo mv /tmp/eksctl /usr/local/bin
-          eksctl version
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
 
-      - name: Verify EC2 Instance Quota & Permissions
-        id: check-instances
+      - name: Terraform Init & Apply
         run: |
-          echo "🔍 Checking availability and quota for t3.medium in $AWS_REGION..."
-          CHOSEN_TYPE="t3.medium"
-          
-          # Check if t3.medium is available in this region
-          OFFERED=$(aws ec2 describe-instance-type-offerings \
-            --location-type availability-zone \
-            --filters Name=instance-type,Values=t3.medium \
-            --region "$AWS_REGION" \
-            --query "length(InstanceTypeOfferings)" \
-            --output text 2>/dev/null || echo "0")
-            
-          if [ "$OFFERED" -gt 0 ]; then
-            echo "✔ t3.medium is fully permitted and supported across $OFFERED AZs in $AWS_REGION."
-          else
-            echo "⚠️ t3.medium not offered. Falling back to t2.medium..."
-            CHOSEN_TYPE="t2.medium"
-          fi
+          cd terraform/eks-cluster
+          terraform init
+          terraform apply -auto-approve \
+            -var="cluster_name=$EKS_CLUSTER_NAME" \
+            -var="aws_region=$AWS_REGION" \
+            -var="nodegroup_name=my-nodes" \
+            -var="node_type=t3.medium" \
+            -var="desired_nodes=2" \
+            -var="min_nodes=1" \
+            -var="max_nodes=4"
 
-          echo "selected_type=$CHOSEN_TYPE" >> $GITHUB_OUTPUT
-
-      - name: Check if EKS Cluster exists or Create it
-        env:
-          NODE_TYPE: ${{ steps.check-instances.outputs.selected_type }}
+      - name: Verify Worker Nodes are Ready
         run: |
-          echo "🔍 Checking if EKS cluster '$EKS_CLUSTER_NAME' exists in region $AWS_REGION..."
-          if aws eks describe-cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
-            CLUSTER_STATUS=$(aws eks describe-cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" --query "cluster.status" --output text)
-            echo "✔ EKS cluster '$EKS_CLUSTER_NAME' already exists! Current status: $CLUSTER_STATUS"
-            if [ "$CLUSTER_STATUS" != "ACTIVE" ]; then
-              echo "⏳ Waiting for cluster to transition to ACTIVE state..."
-              aws eks wait cluster-active --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+          aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+          echo "Waiting up to 3 minutes for worker nodes to report Ready..."
+          for i in {1..18}; do
+            NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
+            if [ "$NODE_COUNT" -gt 0 ]; then
+              break
             fi
-          else
-            echo "⚙ EKS cluster '$EKS_CLUSTER_NAME' does not exist."
-            echo "🚀 Launching new EKS cluster with 2 worker nodes ($NODE_TYPE) via eksctl..."
-            
-            eksctl create cluster \
-              --name "$EKS_CLUSTER_NAME" \
-              --region "$AWS_REGION" \
-              --version "1.31" \
-              --nodegroup-name "my-nodes" \
-              --node-type "$NODE_TYPE" \
-              --nodes 2 \
-              --nodes-min 1 \
-              --nodes-max 4 \
-              --managed \
-              --with-oidc
-              
-            echo "✔ EKS Cluster successfully created by GitHub Actions!"
-          fi
-
-          # Ensure the cluster has worker nodegroups attached
-          echo "🔍 Checking for active nodegroups on cluster '$EKS_CLUSTER_NAME'..."
-          NODEGROUPS=$(aws eks list-nodegroups --cluster-name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" --query "nodegroups" --output text 2>/dev/null || true)
-          if [ -z "$NODEGROUPS" ] || [ "$NODEGROUPS" = "None" ]; then
-            echo "⚠️ Cluster exists but has NO worker nodegroups! Creating managed nodegroup 'my-nodes' (2x $NODE_TYPE)..."
-            
-            # Check if cluster was created by eksctl (has CloudFormation stack)
-            if aws cloudformation describe-stacks --stack-name "eksctl-${EKS_CLUSTER_NAME}-cluster" --region "$AWS_REGION" >/dev/null 2>&1; then
-              echo "✔ Found eksctl cluster stack. Adding nodegroup via eksctl..."
-              eksctl create nodegroup \
-                --cluster "$EKS_CLUSTER_NAME" \
-                --region "$AWS_REGION" \
-                --name "my-nodes" \
-                --node-type "$NODE_TYPE" \
-                --nodes 2 \
-                --nodes-min 1 \
-                --nodes-max 4 \
-                --managed
-            else
-              echo "ℹ Cluster was created outside of eksctl (e.g. AWS Console). Discovering cluster VPC and subnets..."
-              VPC_ID=$(aws eks describe-cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" --query "cluster.resourcesVpcConfig.vpcId" --output text)
-              SUBNET_IDS=$(aws eks describe-cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" --query "cluster.resourcesVpcConfig.subnetIds" --output text)
-              
-              echo "Discovered VPC: $VPC_ID"
-              echo "Discovered Subnets: $SUBNET_IDS"
-              
-              cat <<EOF > /tmp/nodegroup-config.yaml
-apiVersion: eksctl.io/v1alpha5
-kind: ClusterConfig
-metadata:
-  name: $EKS_CLUSTER_NAME
-  region: $AWS_REGION
-  version: "1.31"
-vpc:
-  id: "$VPC_ID"
-  subnets:
-    public:
-EOF
-              SUBNET_INDEX=1
-              for SUBNET in $SUBNET_IDS; do
-                cat <<EOF >> /tmp/nodegroup-config.yaml
-      sub-$SUBNET_INDEX:
-        id: "$SUBNET"
-EOF
-                SUBNET_INDEX=$((SUBNET_INDEX + 1))
-              done
-              
-              cat <<EOF >> /tmp/nodegroup-config.yaml
-managedNodeGroups:
-  - name: my-nodes
-    instanceType: $NODE_TYPE
-    desiredCapacity: 2
-    minSize: 1
-    maxSize: 4
-    volumeSize: 30
-    volumeType: gp3
-    iam:
-      withAddonPolicies:
-        imageBuilder: true
-        autoScaler: true
-        ebs: true
-        albIngress: true
-        cloudWatch: true
-EOF
-
-              echo "Generated dynamic nodegroup config:"
-              cat /tmp/nodegroup-config.yaml
-              
-              eksctl create nodegroup -f /tmp/nodegroup-config.yaml
-            fi
-            echo "✔ Nodegroup 'my-nodes' successfully created!"
-          else
-            echo "✔ Active nodegroups found: $NODEGROUPS"
-          fi
+            sleep 10
+          done
+          kubectl get nodes -o wide
 
   # ============================================================================
   # JOB 3: Deploy Polyglot Shop to AWS EKS
   # ============================================================================
   deploy-to-eks:
     name: "Deploy to AWS EKS Cluster"
-    needs: [create-or-verify-eks-cluster]
+    needs: [provision-eks-terraform]
     runs-on: ubuntu-latest
 
     steps:
